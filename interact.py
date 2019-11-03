@@ -8,7 +8,7 @@ import logging
 import subprocess
 from time import monotonic as _time
 
-__all__ = ["Interact"]
+__all__ = ["Interact", "SocketBackend", "ProcessBackend"]
 
 class SocketBackend:
     def __init__(self, host, port):
@@ -17,7 +17,7 @@ class SocketBackend:
         self.port = port
 
         try:
-            self.logger.info("connecting to %s:%i".format(h=host, p=port))
+            self.logger.info("connecting to %s:%i", host, port)
             self.socket = socket.create_connection((host, port))
         except:
             self.logger.warning("connection failed!")
@@ -65,9 +65,67 @@ class SocketBackend:
         except:
             self.logger.warning("write failed!")
 
+class ProcessBackend:
+    def __init__(self, command, *args, **kwargs):
+        self.logger = logging.getLogger("pyinteract.ProcessBackend.{id}".format(id=id(self)))
+        self.command = command
+
+        try:
+            self.logger.info("running %s with args: %s", command, ", ".join(args))
+            self.process = subprocess.Popen(command, *args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+        except:
+            self.logger.warning("popen failed!")
+            raise
+
+        self.read_selector = self.get_read_selector()
+
+    def get_read_selector(self):
+        result = selectors.SelectSelector()
+        result.register(self.process.stdout, selectors.EVENT_READ)
+        return result
+
+    def close(self):
+        self.logger.info("closing")
+        if self.process:
+            self.process.terminate()
+        self.process = None
+
+    def read(self, timeout=None):
+        if not self.process:
+            self.logger.warning("read failed: process ended")
+            raise EOFError()
+
+        if timeout:
+            self.logger.warning("waiting for read_selector...")
+            if not self.read_selector.select(timeout):
+                self.logger.warning("read failed: timeout")
+                raise TimeoutError()
+
+        self.logger.warning("waiting for readline...")
+        result = self.process.stdout.readline()
+        self.logger.warning("readline completed")
+
+        if not result:
+            self.logger.warning("read failed: EOF")
+            raise EOFError()
+
+        self.logger.info("read %i bytes", len(result))
+        return result
+
+    def write(self, bytestring, timeout=None):
+        try:
+            self.process.stdin.write(bytestring)
+            self.logger.info("wrote %i bytes", len(bytestring))
+        except:
+            self.logger.warning("write failed!")
+            raise
+
 class Interact:
     def host(host="localhost", port=8080):
         return Interact(SocketBackend(host, port))
+
+    def command(cmd, *args):
+        return Interact(ProcessBackend(cmd, *args))
 
     def __init__(self, backend):
         self.logger = logging.getLogger("pyinteract.Interact.{id}".format(id=id(self)))
@@ -164,13 +222,16 @@ class Interact:
                     except EOFError:
                         return
 
-def main(host, port):
-    try:
-        logging.basicConfig(format='%(asctime)-15s %(levelname)s %(name)s - %(message)s')
-        with Interact.host(host, port) as i:
+def main(method, *args):
+    logging.basicConfig(format='%(asctime)-15s %(levelname)s %(name)s - %(message)s', level=logging.DEBUG)
+    if method == "cmd":
+        with Interact.command(*args) as i:
             i.interact()
-    except:
-        pass
+    elif method == "host":
+        with Interact.host(*args) as i:
+            i.interact()
+    else:
+        print("unknown method: {m}".format(m=method))
 
 if __name__ == "__main__":
     main(*sys.argv[1:])
