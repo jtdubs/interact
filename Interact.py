@@ -165,8 +165,12 @@ class Interact:
                         return
 
 def main(host, port):
-    with Interact.host(host, port) as i:
-        i.interact()
+    try:
+        logging.basicConfig(format='%(asctime)-15s %(levelname)s %(name)s - %(message)s')
+        with Interact.host(host, port) as i:
+            i.interact()
+    except:
+        pass
 
 if __name__ == "__main__":
     main(*sys.argv[1:])
