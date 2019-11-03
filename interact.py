@@ -6,6 +6,7 @@ import socket
 import selectors
 import logging
 import subprocess
+import select
 from time import monotonic as _time
 
 __all__ = ["Interact", "SocketBackend", "ProcessBackend"]
@@ -17,21 +18,14 @@ class SocketBackend:
         self.port = port
 
         try:
-            self.logger.info("connecting to %s:%i", host, port)
+            self.logger.info("connecting to %s:%s", host, port)
             self.socket = socket.create_connection((host, port))
         except:
             self.logger.warning("connection failed!")
             raise
 
-        self.read_selector = self.get_read_selector()
-
-    def get_read_selector(self):
-        if hasattr(selectors, 'PollSelector'):
-            result = selectors.PollSelector()
-        else:
-            result = selectors.SelectSelector()
-        result.register(self.socket, selectors.EVENT_READ)
-        return result
+    def get_read_handle(self):
+        return self.socket
 
     def close(self):
         self.logger.info("closing")
@@ -45,7 +39,7 @@ class SocketBackend:
             raise EOFError()
 
         if timeout:
-            if not self.read_selector.select(timeout):
+            if not select.select([self.get_read_handle()], [], [], timeout)[0]:
                 self.logger.warning("read failed: timeout")
                 raise TimeoutError()
 
@@ -77,12 +71,8 @@ class ProcessBackend:
             self.logger.warning("popen failed!")
             raise
 
-        self.read_selector = self.get_read_selector()
-
-    def get_read_selector(self):
-        result = selectors.SelectSelector()
-        result.register(self.process.stdout, selectors.EVENT_READ)
-        return result
+    def get_read_handle(self):
+        return self.process.stdout.raw
 
     def close(self):
         self.logger.info("closing")
@@ -96,14 +86,11 @@ class ProcessBackend:
             raise EOFError()
 
         if timeout:
-            self.logger.warning("waiting for read_selector...")
-            if not self.read_selector.select(timeout):
+            if not select.select([self.get_read_handle()], [], [], timeout)[0]:
                 self.logger.warning("read failed: timeout")
                 raise TimeoutError()
 
-        self.logger.warning("waiting for readline...")
-        result = self.process.stdout.readline()
-        self.logger.warning("readline completed")
+        result = self.process.stdout.raw.readline()
 
         if not result:
             self.logger.warning("read failed: EOF")
@@ -114,7 +101,7 @@ class ProcessBackend:
 
     def write(self, bytestring, timeout=None):
         try:
-            self.process.stdin.write(bytestring)
+            self.process.stdin.raw.write(bytestring)
             self.logger.info("wrote %i bytes", len(bytestring))
         except:
             self.logger.warning("write failed!")
@@ -203,27 +190,27 @@ class Interact:
         return (-1, None, text)
 
     def interact(self):
-        selector = self.backend.get_read_selector()
-        selector.register(sys.stdin, selectors.EVENT_READ)
+        console = sys.stdin
+        remote  = self.backend.get_read_handle()
 
         while True:
-            for key, events in selector.select():
-                if key.fileobj is sys.stdin:
-                    line = sys.stdin.readline().encode('ascii')
-                    if not line:
-                        return
-                    self.write(line)
-                else:
-                    try:
-                        data = self.backend.read()
-                        if data:
-                            sys.stdout.write(data.decode('ascii', errors='replace'))
-                            sys.stdout.flush()
-                    except EOFError:
-                        return
+            readers = select.select([console, remote], [], [])[0]
+            if console in readers:
+                line = sys.stdin.readline().encode('ascii')
+                if not line:
+                    return
+                self.write(line)
+            elif remote in readers:
+                try:
+                    data = self.backend.read()
+                    if data:
+                        sys.stdout.write(data.decode('ascii', errors='replace'))
+                        sys.stdout.flush()
+                except EOFError:
+                    return
 
 def main(method, *args):
-    logging.basicConfig(format='%(asctime)-15s %(levelname)s %(name)s - %(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)-15s %(levelname)s %(name)s - %(message)s', level=logging.WARNING)
     if method == "cmd":
         with Interact.command(*args) as i:
             i.interact()
