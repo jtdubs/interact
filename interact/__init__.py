@@ -9,7 +9,7 @@ import subprocess
 import select
 from time import monotonic as _time
 
-__all__ = ["Interact", "SocketBackend", "ProcessBackend"]
+__all__ = ["SocketBackend", "ProcessBackend", "Interact"]
 
 class SocketBackend:
     def __init__(self, host, port):
